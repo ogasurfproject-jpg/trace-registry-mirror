@@ -1,0 +1,1 @@
+Witness records of the TRACE Registry as observed by this mirror. One canonical JSON file per observed head (sorted keys, no spaces, UTF-8), each with an OpenTimestamps proof `<file>.ots`. Schema `hs-trace-registry-witness-v1`, written by `tools/witness_head.py`.

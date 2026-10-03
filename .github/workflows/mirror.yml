@@ -1,0 +1,84 @@
+# Independent mirror of agentrust-io/trace-registry, following its docs/mirroring.md.
+# Lives on mirror-ops (the default branch), never on main: main must carry no commit of ours.
+name: Mirror and witness
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Fast-forward main from canonical, refuse a rewrite
+        env:
+          DEPLOY_KEY: ${{ secrets.MIRROR_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/mirror_key
+          chmod 600 ~/.ssh/mirror_key
+          ssh-keyscan -t ed25519 github.com 2>/dev/null > ~/.ssh/known_hosts
+          fp="$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')"
+          [ "$fp" = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU" ] || { echo "::error::github.com host key fingerprint is $fp, not GitHub's published one"; exit 1; }
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/mirror_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone --quiet --branch main "git@github.com:${GITHUB_REPOSITORY}.git" mirror
+          cd mirror
+          git remote add canonical https://github.com/agentrust-io/trace-registry.git
+          git fetch --quiet canonical main
+          before="$(git rev-parse HEAD)"
+          target="$(git rev-parse canonical/main)"
+          if ! git merge-base --is-ancestor "$before" "$target"; then
+            echo "::error::canonical main ($target) does not descend from mirror main ($before): possible history rewrite. The mirror is left where it was."
+            exit 1
+          fi
+          if [ "$before" != "$target" ]; then
+            git merge --quiet --ff-only canonical/main
+            git push --quiet origin main
+          fi
+          echo "mirror main = canonical main = $target"
+      - name: Keep canonical's own workflows switched off in this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate --jq '.workflows[] | select(.path != ".github/workflows/mirror.yml" and .state == "active") | .id' |
+          while read -r id; do gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${id}/disable" && echo "disabled workflow $id"; done
+
+  witness:
+    needs: sync
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Record the observed head and stamp it with OpenTimestamps
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          H="http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}"
+          git -c "$H" clone --quiet --branch mirror-ops "https://github.com/${GITHUB_REPOSITORY}.git" ops
+          git clone --quiet --branch main "https://github.com/${GITHUB_REPOSITORY}.git" reg
+          canon="$(git ls-remote https://github.com/agentrust-io/trace-registry.git refs/heads/main | cut -f1)"
+          python3 -m pip install --quiet "opentimestamps-client>=0.7,<0.8"
+          cd ops
+          for f in $(python3 tools/ots_pending.py witness/heads); do ots upgrade "$f" || true; done
+          find witness -name '*.ots.bak' -delete
+          new="$(python3 tools/witness_head.py --registry ../reg --canonical-head "$canon" --out witness/heads)"
+          if [ -n "$new" ]; then ots stamp "$new"; echo "recorded $new"; fi
+          git add witness
+          if git diff --cached --quiet; then echo "nothing new to record"; exit 0; fi
+          git -c user.name="HORIZON SHIELD mirror" -c user.email="contact@the-horizons-innovation.com" commit --quiet -m "witness: canonical head ${canon:0:12}"
+          git -c "$H" push --quiet origin mirror-ops
