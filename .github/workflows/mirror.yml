@@ -21,6 +21,13 @@ jobs:
       contents: read
       actions: write
     steps:
+      - name: Switch canonical's own workflows off before the push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate --jq '.workflows[] | select(.path != ".github/workflows/mirror.yml" and .state == "active") | .id' |
+          while read -r id; do gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${id}/disable" && echo "disabled workflow $id"; done
       - name: Fast-forward main from canonical, refuse a rewrite
         env:
           DEPLOY_KEY: ${{ secrets.MIRROR_DEPLOY_KEY }}
@@ -48,13 +55,21 @@ jobs:
             git push --quiet origin main
           fi
           echo "mirror main = canonical main = $target"
-      - name: Keep canonical's own workflows switched off in this repository
+      - name: After the push, switch off any workflow it brought and cancel any run it started
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate --jq '.workflows[] | select(.path != ".github/workflows/mirror.yml" and .state == "active") | .id' |
-          while read -r id; do gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${id}/disable" && echo "disabled workflow $id"; done
+          # A push made with the deploy key starts canonical's push workflows on main, and a workflow file that is new
+          # in this canonical commit is only listed once GitHub has registered it. So look three times, 15 s apart.
+          for round in 1 2 3; do
+            sleep 15
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate --jq '.workflows[] | select(.path != ".github/workflows/mirror.yml" and .state == "active") | .id' |
+            while read -r id; do gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${id}/disable" && echo "disabled workflow $id"; done
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs?branch=main&per_page=100" --paginate --jq '.workflow_runs[] | select(.status != "completed") | .id' |
+            while read -r rid; do gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${rid}/cancel" >/dev/null && echo "cancelled run $rid" || echo "run $rid finished before it could be cancelled"; done
+          done
 
   witness:
     needs: sync
