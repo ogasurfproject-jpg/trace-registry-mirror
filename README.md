@@ -25,6 +25,8 @@ ots verify witness/heads/2026/10/<record>.json.ots
 
 A record does not establish that any signature in the registry is valid, that any Trust Record is true, or that every observer saw the same history.
 
+TRACE's informative page [Verifying a record after the freshness window](https://github.com/agentrust-io/trace-spec/blob/main/docs/verifying-after-the-freshness-window.md) (agentrust-io/trace-spec#480) explains why this matters: a registry entry's `ts` is written by whoever submitted the batch, so the bound that does not depend on the producer is "the earliest time an independent party observed the entry", a mirror's copy being one example. For an entry present at a head recorded here, that time is the record's Bitcoin block. State it as such: observed by this mirror no later than block N.
+
 ## Contact
 
 Security contact: `contact@the-horizons-innovation.com` (subject `[security]`), policy at https://shield.the-horizons-innovation.com/security/ and RFC 9116 file at https://shield.the-horizons-innovation.com/.well-known/security.txt. We commit to keeping this mirror running for at least 12 months from registration, or to removing our entry if we stop.
